@@ -9,7 +9,11 @@ import { adminRoutes } from "./routes/admin.js";
 const app = express();
 const PORT = process.env.PORT || 3010;
 
-app.use(cors({ origin: process.env.FRONT_URL || "http://localhost:5173", credentials: true }));
+// Accept any origin: reflect the request origin. For production restrict, set FRONT_URL and use origin: process.env.FRONT_URL
+const corsOrigin = process.env.FRONT_URL && !process.env.FRONT_URL.includes("localhost")
+  ? process.env.FRONT_URL
+  : true;
+app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
 app.use("/api/albums", albumRoutes);
