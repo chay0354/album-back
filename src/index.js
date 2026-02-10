@@ -16,6 +16,8 @@ const corsOrigin = process.env.FRONT_URL && !process.env.FRONT_URL.includes("loc
 app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
+app.get("/", (_, res) => res.json({ name: "Album API", health: "/api/health" }));
+
 app.use("/api/albums", albumRoutes);
 app.use("/api/covers", coverRoutes);
 app.use("/api/pdf", pdfRoutes);
