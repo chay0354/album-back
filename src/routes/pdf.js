@@ -2,7 +2,7 @@ import { Router } from "express";
 import { readFile } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { supabase } from "../supabase.js";
 
@@ -46,6 +46,8 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
 
     const doc = await PDFDocument.create();
     doc.registerFontkit(fontkit);
+    const pdfW = 595;
+    const pdfH = 842;
     const coverConfig = album.cover_config || {};
     let coverImageUrl = null;
     if (album.cover_id) {
@@ -55,47 +57,73 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
       coverImageUrl = coverConfig.coverUrl;
     }
 
-    // Cover page
+    // Cover page: center the cover image as-is (preserve aspect ratio, fit on page)
     const coverPdfPage = doc.addPage([595, 842]);
     if (coverImageUrl) {
       try {
         const imgBytes = await getImageBytes(coverImageUrl);
         if (imgBytes) {
           const img = await doc.embedJpg(imgBytes).catch(() => doc.embedPng(imgBytes));
-          coverPdfPage.drawImage(img, { x: 0, y: 0, width: 595, height: 842 });
+          const pageW = 595;
+          const pageH = 842;
+          const scale = Math.min(pageW / img.width, pageH / img.height);
+          const drawW = img.width * scale;
+          const drawH = img.height * scale;
+          const drawX = (pageW - drawW) / 2;
+          const drawY = (pageH - drawH) / 2;
+          coverPdfPage.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
         }
       } catch (_) {}
     }
-    if (coverConfig.headerText) {
-      const pdfW = 595;
-      const pdfH = 842;
-      const headerX = typeof coverConfig.headerX === "number" ? coverConfig.headerX : 50;
-      const headerY = typeof coverConfig.headerY === "number" ? coverConfig.headerY : 18;
-      const fontSize = typeof coverConfig.headerFontSize === "number" ? coverConfig.headerFontSize : 28;
-      const x = (headerX / 100) * pdfW;
-      const y = pdfH - (headerY / 100) * pdfH;
+    function hexToRgb(hex) {
+      if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return rgb(1, 1, 1);
+      return rgb(
+        parseInt(hex.slice(1, 3), 16) / 255,
+        parseInt(hex.slice(3, 5), 16) / 255,
+        parseInt(hex.slice(5, 7), 16) / 255
+      );
+    }
+    const textsToDraw = Array.isArray(coverConfig.texts) && coverConfig.texts.length > 0
+      ? coverConfig.texts
+      : coverConfig.headerText
+        ? [{
+            content: coverConfig.headerText,
+            x: typeof coverConfig.headerX === "number" ? coverConfig.headerX : 50,
+            y: typeof coverConfig.headerY === "number" ? coverConfig.headerY : 18,
+            fontSize: typeof coverConfig.headerFontSize === "number" ? coverConfig.headerFontSize : 28,
+            color: "#ffffff",
+          }]
+        : [];
+    if (textsToDraw.length > 0) {
       let font;
       try {
         const fontBytes = await getHebrewFontBytes();
         font = await doc.embedFont(fontBytes);
       } catch (fontErr) {
         console.warn("[PDF] Hebrew font load failed, skipping cover text:", fontErr.message);
-        font = null;
       }
       if (font) {
-        const textWidth = font.widthOfTextAtSize(coverConfig.headerText, fontSize);
-        coverPdfPage.drawText(coverConfig.headerText, {
-          x: x - textWidth / 2,
-          y,
-          size: fontSize,
-          font,
-        });
+        for (const t of textsToDraw) {
+          const content = (t.content || "").trim();
+          if (!content) continue;
+          const xPct = typeof t.x === "number" ? t.x : 50;
+          const yPct = typeof t.y === "number" ? t.y : 18;
+          const fontSize = typeof t.fontSize === "number" ? t.fontSize : 28;
+          const x = (xPct / 100) * pdfW;
+          const y = pdfH - (yPct / 100) * pdfH;
+          const textWidth = font.widthOfTextAtSize(content, fontSize);
+          coverPdfPage.drawText(content, {
+            x: x - textWidth / 2,
+            y,
+            size: fontSize,
+            font,
+            color: hexToRgb(t.color || "#ffffff"),
+          });
+        }
       }
     }
 
     const baseUrl = supabase.storage.from("album-photos").getPublicUrl("").data.publicUrl.replace(/\/$/, "");
-    const pdfW = 595;
-    const pdfH = 842;
     for (const p of pages || []) {
       const photos = (p.album_photos || []).sort((a, b) => a.photo_order - b.photo_order);
       if (photos.length === 0) continue;
@@ -116,7 +144,13 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
           const imgBytes = await getImageBytes(url);
           if (!imgBytes) continue;
           const img = await doc.embedJpg(imgBytes).catch(() => doc.embedPng(imgBytes));
-          pdfPage.drawImage(img, { x, y, width: w, height: h });
+          // Fit image inside the box preserving aspect ratio (like object-fit: contain)
+          const scale = Math.min(w / img.width, h / img.height);
+          const drawW = img.width * scale;
+          const drawH = img.height * scale;
+          const drawX = x + (w - drawW) / 2;
+          const drawY = y + (h - drawH) / 2;
+          pdfPage.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
         } catch (_) {}
       }
     }

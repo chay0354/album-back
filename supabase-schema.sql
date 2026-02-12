@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS album_pages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   album_id UUID NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
   page_order INT NOT NULL DEFAULT 0,
+  page_config JSONB DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -48,6 +49,8 @@ CREATE TABLE IF NOT EXISTS pdf_deliveries (
 -- 1. Bucket "covers" (public)
 -- 2. Bucket "album-photos" (public)
 -- 3. Bucket "pdfs" (public) – generated album PDFs
+
+-- If album_pages already exists without page_config, run: ALTER TABLE album_pages ADD COLUMN IF NOT EXISTS page_config JSONB DEFAULT '{}';
 
 -- RLS (service_role bypasses RLS; these allow anon/authenticated if needed)
 ALTER TABLE albums ENABLE ROW LEVEL SECURITY;

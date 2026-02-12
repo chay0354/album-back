@@ -16,9 +16,11 @@ You should see “Success. No rows returned.” Then the tables exist:
 - `public.base_covers`
 - `public.pdf_deliveries`
 
-**Storage:** In **Storage** create three buckets (if they don’t exist):
+**Storage:** In **Storage** create five buckets (if they don’t exist):
 
 - Name: `covers` → set to **Public**.
+- Name: `premade-covers` → set to **Public** (optional; for premade cover templates in Edit Cover).
+- Name: `elements` → set to **Public** (optional; for sticker/decor elements in the page editor).
 - Name: `album-photos` → set to **Public**.
 - Name: `pdfs` → set to **Public** (for generated album PDFs).
 

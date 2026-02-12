@@ -117,10 +117,29 @@ albumRoutes.post("/:albumId/pages", async (req, res) => {
 
 albumRoutes.delete("/:albumId/pages/:pageId", async (req, res) => {
   try {
-    const { pageId } = req.params;
+    const { albumId, pageId } = req.params;
+    const { data: page } = await supabase.from("album_pages").select("id").eq("id", pageId).eq("album_id", albumId).single();
+    if (!page) return res.status(404).json({ error: "Page not found" });
     const { error } = await supabase.from("album_pages").delete().eq("id", pageId);
     if (error) throw error;
     res.status(204).send();
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+albumRoutes.patch("/:albumId/pages/:pageId", async (req, res) => {
+  try {
+    const { albumId, pageId } = req.params;
+    const { page_config } = req.body;
+    const { data: page } = await supabase.from("album_pages").select("id").eq("id", pageId).eq("album_id", albumId).single();
+    if (!page) return res.status(404).json({ error: "Page not found" });
+    const updates = {};
+    if (page_config !== undefined) updates.page_config = page_config;
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: "No updates" });
+    const { data, error } = await supabase.from("album_pages").update(updates).eq("id", pageId).select().single();
+    if (error) throw error;
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
