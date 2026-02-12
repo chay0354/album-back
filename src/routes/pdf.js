@@ -128,6 +128,17 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
       const photos = (p.album_photos || []).sort((a, b) => a.photo_order - b.photo_order);
       if (photos.length === 0) continue;
       const pdfPage = doc.addPage([pdfW, pdfH]);
+      const pageConfig = p.page_config || {};
+      const bgHex = pageConfig.backgroundColor;
+      if (bgHex && /^#[0-9A-Fa-f]{6}$/.test(bgHex)) {
+        pdfPage.drawRectangle({
+          x: 0,
+          y: 0,
+          width: pdfW,
+          height: pdfH,
+          color: hexToRgb(bgHex),
+        });
+      }
       for (let i = 0; i < photos.length; i++) {
         const ph = photos[i];
         const layout = ph.layout && typeof ph.layout.x === "number" ? ph.layout : null;
