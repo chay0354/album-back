@@ -124,11 +124,18 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
     }
 
     const baseUrl = supabase.storage.from("album-photos").getPublicUrl("").data.publicUrl.replace(/\/$/, "");
+    let hebrewFont = null;
+    try {
+      const fontBytes = await getHebrewFontBytes();
+      hebrewFont = await doc.embedFont(fontBytes);
+    } catch (_) {}
+
     for (const p of pages || []) {
       const photos = (p.album_photos || []).sort((a, b) => a.photo_order - b.photo_order);
-      if (photos.length === 0) continue;
-      const pdfPage = doc.addPage([pdfW, pdfH]);
       const pageConfig = p.page_config || {};
+      const pageTexts = Array.isArray(pageConfig.texts) ? pageConfig.texts : [];
+      if (photos.length === 0 && pageTexts.length === 0) continue;
+      const pdfPage = doc.addPage([pdfW, pdfH]);
       const bgHex = pageConfig.backgroundColor;
       if (bgHex && /^#[0-9A-Fa-f]{6}$/.test(bgHex)) {
         pdfPage.drawRectangle({
@@ -155,7 +162,6 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
           const imgBytes = await getImageBytes(url);
           if (!imgBytes) continue;
           const img = await doc.embedJpg(imgBytes).catch(() => doc.embedPng(imgBytes));
-          // Fit image inside the box preserving aspect ratio (like object-fit: contain)
           const scale = Math.min(w / img.width, h / img.height);
           const drawW = img.width * scale;
           const drawH = img.height * scale;
@@ -163,6 +169,25 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
           const drawY = y + (h - drawH) / 2;
           pdfPage.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
         } catch (_) {}
+      }
+      if (hebrewFont && pageTexts.length > 0) {
+        for (const t of pageTexts) {
+          const content = (t.content || "").trim();
+          if (!content) continue;
+          const xPct = typeof t.x === "number" ? t.x : 50;
+          const yPct = typeof t.y === "number" ? t.y : 25;
+          const fontSize = typeof t.fontSize === "number" ? t.fontSize : 28;
+          const x = (xPct / 100) * pdfW;
+          const y = pdfH - (yPct / 100) * pdfH;
+          const textWidth = hebrewFont.widthOfTextAtSize(content, fontSize);
+          pdfPage.drawText(content, {
+            x: x - textWidth / 2,
+            y,
+            size: fontSize,
+            font: hebrewFont,
+            color: hexToRgb(t.color || "#000000"),
+          });
+        }
       }
     }
 
