@@ -19,6 +19,30 @@ albumRoutes.get("/", async (_, res) => {
   }
 });
 
+/** Get album by share token (public view; no auth) */
+albumRoutes.get("/by-share-token/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token) return res.status(400).json({ error: "Token required" });
+    const { data: album, error: albumError } = await supabase
+      .from("albums")
+      .select("*")
+      .eq("share_token", token)
+      .single();
+    if (albumError || !album) {
+      return res.status(404).json({ error: "Album not found" });
+    }
+    const { data: pages } = await supabase
+      .from("album_pages")
+      .select("*, album_photos(*)")
+      .eq("album_id", album.id)
+      .order("page_order");
+    res.json({ ...album, pages: pages || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 albumRoutes.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -66,11 +90,12 @@ albumRoutes.post("/", async (req, res) => {
 albumRoutes.patch("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, cover_id, cover_config } = req.body;
+    const { title, cover_id, cover_config, share_token } = req.body;
     const updates = {};
     if (title !== undefined) updates.title = title;
     if (cover_id !== undefined) updates.cover_id = cover_id;
     if (cover_config !== undefined) updates.cover_config = cover_config;
+    if (share_token !== undefined) updates.share_token = share_token;
     updates.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("albums").update(updates).eq("id", id).select().single();
     if (error) throw error;
