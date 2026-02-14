@@ -5,6 +5,9 @@ import { supabase } from "../supabase.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+/** Storage bucket for premade cover images (admin uploads; listed in EditCover "בחר רקע כריכה") */
+const PREMADE_COVERS_BUCKET = "premade-covers";
+
 export const coverRoutes = Router();
 
 /** List all file paths in a storage bucket (root + one level of subfolders) */
@@ -38,11 +41,33 @@ coverRoutes.get("/list", async (_, res) => {
   }
 });
 
-/** List all file paths in the "premade-covers" bucket */
+/** List all file paths in the premade-covers bucket */
 coverRoutes.get("/premade", async (_, res) => {
   try {
-    const paths = await listBucketPaths("premade-covers");
+    const paths = await listBucketPaths(PREMADE_COVERS_BUCKET);
     res.json(paths.map((path) => ({ path })));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** Upload a cover image to the premade-covers bucket (admin). Used by Admin page "העלאת כריכות מוכנות". */
+coverRoutes.post("/premade/upload", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file" });
+    const ext = (req.file.originalname.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/i, "") || "jpg";
+    const baseName = (req.file.originalname.replace(/\.[^.]+$/, "") || "cover")
+      .replace(/[^\w\u0590-\u05FF\-_\s]/gi, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 60) || "cover";
+    const path = `${baseName}-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from(PREMADE_COVERS_BUCKET).upload(path, req.file.buffer, {
+      contentType: req.file.mimetype || `image/${ext}`,
+      upsert: false,
+    });
+    if (error) throw error;
+    const { data } = supabase.storage.from(PREMADE_COVERS_BUCKET).getPublicUrl(path);
+    res.status(201).json({ path, url: data.publicUrl });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
