@@ -43,6 +43,77 @@ albumRoutes.get("/by-share-token/:token", async (req, res) => {
   }
 });
 
+/** Create a new album as a copy of the album identified by share token (for "get this album for myself") */
+albumRoutes.post("/from-share-token", async (req, res) => {
+  try {
+    const { share_token: token } = req.body;
+    if (!token) return res.status(400).json({ error: "share_token required" });
+    const { data: source, error: albumError } = await supabase
+      .from("albums")
+      .select("*")
+      .eq("share_token", token)
+      .single();
+    if (albumError || !source) {
+      return res.status(404).json({ error: "Album not found" });
+    }
+    const { data: sourcePages } = await supabase
+      .from("album_pages")
+      .select("*, album_photos(*)")
+      .eq("album_id", source.id)
+      .order("page_order");
+    const title = source.title ? `עותק של ${source.title}` : "אלבום חדש";
+    const { data: album, error: createErr } = await supabase
+      .from("albums")
+      .insert({
+        title,
+        cover_id: source.cover_id || null,
+        cover_config: source.cover_config || {},
+      })
+      .select()
+      .single();
+    if (createErr) throw createErr;
+    const defaultPage = await supabase
+      .from("album_pages")
+      .select("id")
+      .eq("album_id", album.id)
+      .single();
+    if (defaultPage?.data?.id) {
+      await supabase.from("album_pages").delete().eq("id", defaultPage.data.id);
+    }
+    const pageOrderToNewId = new Map();
+    for (const sp of sourcePages || []) {
+      const { data: newPage, error: pageErr } = await supabase
+        .from("album_pages")
+        .insert({
+          album_id: album.id,
+          page_order: sp.page_order,
+          page_config: sp.page_config || {},
+        })
+        .select()
+        .single();
+      if (pageErr) throw pageErr;
+      pageOrderToNewId.set(sp.page_order, newPage.id);
+      const photos = sp.album_photos || [];
+      for (const ph of photos) {
+        await supabase.from("album_photos").insert({
+          page_id: newPage.id,
+          storage_path: ph.storage_path,
+          photo_order: ph.photo_order ?? 0,
+          layout: ph.layout ?? null,
+        });
+      }
+    }
+    const { data: pages } = await supabase
+      .from("album_pages")
+      .select("*, album_photos(*)")
+      .eq("album_id", album.id)
+      .order("page_order");
+    res.status(201).json({ ...album, pages: pages || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 albumRoutes.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
