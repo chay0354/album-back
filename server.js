@@ -715,7 +715,7 @@ function forwardAuth(method, path, req, res) {
   const url = `${MATRIYA_BACK_URL}/auth${path}`;
   const headers = { 'Content-Type': 'application/json' };
   if (req.headers.authorization) headers.Authorization = req.headers.authorization;
-  const opts = { method, url, headers, timeout: 15000 };
+  const opts = { method, url, headers, timeout: 30000 };
   if ((method === 'POST' || method === 'PUT') && req.body) opts.data = req.body;
   axios(opts)
     .then(async r => {
@@ -747,7 +747,7 @@ app.get('/api/auth/me', (req, res) => {
   const url = `${MATRIYA_BACK_URL}/auth/me`;
   const headers = { 'Content-Type': 'application/json' };
   if (req.headers.authorization) headers.Authorization = req.headers.authorization;
-  axios({ method: 'GET', url, headers, timeout: 15000 })
+  axios({ method: 'GET', url, headers, timeout: 30000 })
     .then(async r => {
       const data = r.data;
       if (r.status === 200 && data && data.id != null && data.username) {
@@ -1190,6 +1190,114 @@ app.delete('/api/projects/:projectId/files/:fileId', async (req, res) => {
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+const SHAREPOINT_BUCKET = 'sharepoint-files';
+const MAPPING_KEY = '_mapping.json';
+
+const bucketListCache = { data: null, expiresAt: 0 };
+const BUCKET_CACHE_TTL_MS = 2 * 60 * 1000;
+
+async function getBucketNameMapping() {
+  const { data, error } = await supabase.storage.from(SHAREPOINT_BUCKET).download(MAPPING_KEY);
+  if (error || !data) return {};
+  try {
+    const text = await data.text();
+    return JSON.parse(text) || {};
+  } catch { return {}; }
+}
+
+async function listBucketRecursive(prefix = '') {
+  const { data, error } = await supabase.storage.from(SHAREPOINT_BUCKET).list(prefix, { limit: 500 });
+  if (error) throw error;
+  const files = [];
+  const subdirs = [];
+  for (const item of data || []) {
+    const path = prefix ? `${prefix}/${item.name}` : item.name;
+    if (item.id != null) files.push({ path, name: item.name });
+    else subdirs.push(path);
+  }
+  if (subdirs.length) {
+    const nested = await Promise.all(subdirs.map(p => listBucketRecursive(p)));
+    nested.forEach(arr => files.push(...arr));
+  }
+  return files;
+}
+
+app.get('/api/projects/:projectId/files/sharepoint-bucket', async (req, res) => {
+  try {
+    const ctx = await requireProjectMember(req, res, req.params.projectId);
+    if (!ctx) return;
+    if (bucketListCache.data && Date.now() < bucketListCache.expiresAt) {
+      return res.json({ files: bucketListCache.data });
+    }
+    const [files, mapping] = await Promise.all([listBucketRecursive(''), getBucketNameMapping()]);
+    const withDisplay = files.map(f => ({ ...f, displayName: mapping[f.path] || f.name }));
+    bucketListCache.data = withDisplay;
+    bucketListCache.expiresAt = Date.now() + BUCKET_CACHE_TTL_MS;
+    res.json({ files: withDisplay });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'Failed to list bucket' });
+  }
+});
+
+app.post('/api/projects/:projectId/files/from-bucket', async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    const ctx = await requireProjectMember(req, res, projectId);
+    if (!ctx) return;
+    const path = req.body?.path;
+    if (!path || typeof path !== 'string') return res.status(400).json({ error: 'path is required' });
+    if (!MATRIYA_BACK_URL) return res.status(503).json({ error: 'MATRIYA_BACK_URL not set' });
+    let displayName = req.body?.displayName;
+    if (!displayName || typeof displayName !== 'string') {
+      const mapping = await getBucketNameMapping();
+      displayName = mapping[path] || path.split('/').pop() || path || 'file';
+    }
+    const { data: blob, error: downloadError } = await supabase.storage.from(SHAREPOINT_BUCKET).download(path);
+    if (downloadError || !blob) return res.status(404).json({ error: downloadError?.message || 'File not found in bucket' });
+    const buffer = Buffer.from(await blob.arrayBuffer());
+    const originalName = displayName;
+    const form = new FormData();
+    form.append('file', buffer, { filename: originalName });
+    const ingestRes = await axios.post(`${MATRIYA_BACK_URL}/ingest/file`, form, {
+      timeout: 120000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      headers: form.getHeaders()
+    });
+    if (!ingestRes.data?.success) return res.status(500).json({ error: ingestRes.data?.error || 'Matriya ingestion failed' });
+    const { data: row, error } = await supabase.from('project_files').insert({
+      project_id: projectId,
+      original_name: originalName,
+      storage_path: path
+    }).select().single();
+    if (error) throw error;
+    auditLog(projectId, ctx.user.id, ctx.user.username, 'create', 'project_file', row.id, { original_name: originalName, source: 'sharepoint_bucket' }, req.requestId);
+    res.status(201).json(row);
+  } catch (e) {
+    res.status(e.response?.status || 500).json({ error: e.response?.data?.error || e.message });
+  }
+});
+
+app.get('/api/projects/:projectId/files/:fileId/download', async (req, res) => {
+  try {
+    const ctx = await requireProjectMember(req, res, req.params.projectId);
+    if (!ctx) return;
+    const { projectId, fileId } = req.params;
+    const { data: row, error } = await supabase.from('project_files').select('original_name, storage_path').eq('id', fileId).eq('project_id', projectId).single();
+    if (error || !row) return res.status(404).json({ error: 'File not found' });
+    if (!row.storage_path) return res.status(404).json({ error: 'Download not available for this file (not from SharePoint bucket)' });
+    const { data: blob, error: downloadError } = await supabase.storage.from(SHAREPOINT_BUCKET).download(row.storage_path);
+    if (downloadError || !blob) return res.status(404).json({ error: downloadError?.message || 'File not found in storage' });
+    const buffer = Buffer.from(await blob.arrayBuffer());
+    const filename = row.original_name || row.storage_path.split('/').pop() || 'download';
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.send(buffer);
+  } catch (e) {
+    res.status(e.response?.status || 500).json({ error: e.response?.data?.error || e.message });
   }
 });
 

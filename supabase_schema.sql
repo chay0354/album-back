@@ -67,8 +67,10 @@ CREATE TABLE IF NOT EXISTS project_files (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   original_name TEXT NOT NULL,
+  storage_path TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE project_files ADD COLUMN IF NOT EXISTS storage_path TEXT;
 
 CREATE INDEX IF NOT EXISTS project_files_project_id_idx ON project_files(project_id);
 

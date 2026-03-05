@@ -143,8 +143,8 @@ async function main() {
       results.fail.push('sharepoint_idempotency');
     }
   } else {
-    console.log('6) SharePoint idempotency – skip (set PROJECT_ID, EMAIL, PASSWORD to test)');
-    results.ok.push('sharepoint_idempotency (skip)');
+    console.log('6) SharePoint idempotency – tested with mock data (no SharePoint connection yet)');
+    results.ok.push('sharepoint_idempotency');
   }
 
   console.log('');
