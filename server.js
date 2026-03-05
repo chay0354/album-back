@@ -773,11 +773,13 @@ async function getCurrentUser(req) {
   try {
     const r = await axios.get(`${MATRIYA_BACK_URL}/auth/me`, {
       headers: { Authorization: req.headers.authorization },
-      timeout: 8000
+      timeout: 30000
     });
     if (r.data && r.data.id != null) return r.data;
   } catch (e) {
-    /* ignore */
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('getCurrentUser failed:', e.code || e.response?.status || e.message);
+    }
   }
   return null;
 }
@@ -796,6 +798,10 @@ function projectHasMembers(projectId) {
 
 // ---------- RBAC: require project member (returns access or sends 403) ----------
 async function requireProjectMember(req, res, projectId) {
+  if (!MATRIYA_BACK_URL) {
+    res.status(503).json({ error: 'Auth not configured. Set MATRIYA_BACK_URL in the backend environment (e.g. Vercel).' });
+    return null;
+  }
   const user = await getCurrentUser(req);
   if (!user) {
     res.status(401).json({ error: 'Authentication required' });
