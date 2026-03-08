@@ -1,7 +1,7 @@
 # PDF fonts
 
-- **NotoSansHebrew-Regular.ttf** – Hebrew text (RTL). Loaded from this folder first, then CDN.
-- **NotoSansSymbols2-Regular.ttf** – Emoji and symbols. Loaded from this folder or CDN so many Unicode symbols/emoji can render in the PDF.
-- **NotoEmoji-Regular.ttf** – Optional; improves emoji coverage if present.
+- **NotoSansHebrew-Regular.ttf** – Hebrew (and Latin) text; RTL applied when needed.
+- **NotoSansSymbols2-Regular.ttf** – Fallback for symbols/emoji when Noto Emoji is not used.
+- **NotoEmoji-Regular.ttf** – Used for emoji runs in the PDF when present (improves emoji like 🙏).
 
-Hebrew is drawn right-to-left by reversing the text when the run is purely Hebrew. Emoji/symbol runs use the symbols (or emoji) font when available.
+Text is rendered as PNG with canvas; emoji runs use Noto Emoji when the file is here, otherwise Noto Sans Symbols 2.

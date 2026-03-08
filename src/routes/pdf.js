@@ -1,5 +1,6 @@
 import { Router } from "express";
 import path from "path";
+import { existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { createCanvas, registerFont } from "canvas";
 import { PDFDocument, rgb } from "pdf-lib";
@@ -62,15 +63,23 @@ async function renderTextToPng(content, opts = {}) {
 
 const HEBREW_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansHebrew-Regular.ttf");
 const SYMBOLS_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansSymbols2-Regular.ttf");
+const EMOJI_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoEmoji-Regular.ttf");
 try {
   registerFont(HEBREW_FONT_LOCAL, { family: "Noto Sans Hebrew" });
 } catch (_) {}
 try {
   registerFont(SYMBOLS_FONT_LOCAL, { family: "Noto Sans Symbols 2" });
 } catch (_) {}
+let emojiFontFamily = "Noto Sans Symbols 2";
+try {
+  if (existsSync(EMOJI_FONT_LOCAL)) {
+    registerFont(EMOJI_FONT_LOCAL, { family: "Noto Emoji" });
+    emojiFontFamily = "Noto Emoji";
+  }
+} catch (_) {}
 
 const TEXT_FONT = '"Noto Sans Hebrew", sans-serif';
-const EMOJI_FONT = '"Noto Sans Symbols 2", sans-serif';
+const EMOJI_FONT = `"${emojiFontFamily}", "Noto Sans Symbols 2", sans-serif`;
 
 function hasHebrew(str) {
   return /[\u0590-\u05FF\uFB1D-\uFB4F\u0600-\u06FF]/.test(str);
