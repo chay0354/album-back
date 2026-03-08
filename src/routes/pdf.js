@@ -10,47 +10,96 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pdfRoutes = Router();
 
 /**
- * Render text as PNG image (avoids PDF font/encoding issues). Returns { pngBuffer, widthPt, heightPt }.
- * Uses Noto Sans Hebrew; RTL is applied for Hebrew text.
+ * Render text as PNG (Hebrew + emoji supported). Segments into text vs emoji runs;
+ * draws each run with the right font. Returns { pngBuffer, widthPt, heightPt }.
  */
 async function renderTextToPng(content, opts = {}) {
   const fontSizePt = typeof opts.fontSize === "number" ? opts.fontSize : 28;
   const color = opts.color || "#000000";
   const scale = 2;
   const fontSizePx = fontSizePt * scale;
-  const canvas = createCanvas(1, 1);
-  const ctx = canvas.getContext("2d");
-  ctx.font = `${fontSizePx}px "Noto Sans Hebrew", sans-serif`;
-  const hasRtl = hasHebrew(content);
-  if (hasRtl) ctx.direction = "rtl";
-  const metrics = ctx.measureText(content);
-  const textWidthPx = metrics.width;
-  const textHeightPx = fontSizePx * 1.3;
   const padding = fontSizePx * 0.5;
-  const w = Math.ceil(textWidthPx + padding * 2);
+  const textHeightPx = fontSizePx * 1.3;
+
+  const runs = segmentText(content);
+  const measureCtx = createCanvas(1, 1).getContext("2d");
+  let totalWidthPx = 0;
+  const runInfos = [];
+
+  for (const run of runs) {
+    const font = run.emoji ? EMOJI_FONT : TEXT_FONT;
+    measureCtx.font = `${fontSizePx}px ${font}`;
+    measureCtx.direction = !run.emoji && hasHebrew(run.text) ? "rtl" : "ltr";
+    const w = measureCtx.measureText(run.text).width;
+    totalWidthPx += w;
+    runInfos.push({ text: run.text, emoji: run.emoji, widthPx: w });
+  }
+
+  const w = Math.ceil(totalWidthPx + padding * 2);
   const h = Math.ceil(textHeightPx + padding * 2);
   const c = createCanvas(w, h);
-  const ctx2 = c.getContext("2d");
-  ctx2.font = `${fontSizePx}px "Noto Sans Hebrew", sans-serif`;
-  ctx2.direction = hasRtl ? "rtl" : "ltr";
-  ctx2.textAlign = "center";
-  ctx2.textBaseline = "middle";
-  ctx2.fillStyle = color;
-  ctx2.fillText(content, w / 2, h / 2);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.font = `${fontSizePx}px ${TEXT_FONT}`;
+
+  let x = padding;
+  const y = h / 2;
+  for (const run of runInfos) {
+    const font = run.emoji ? EMOJI_FONT : TEXT_FONT;
+    ctx.font = `${fontSizePx}px ${font}`;
+    ctx.direction = !run.emoji && hasHebrew(run.text) ? "rtl" : "ltr";
+    ctx.textAlign = "left";
+    ctx.fillText(run.text, x, y);
+    x += run.widthPx;
+  }
+
   const pngBuffer = c.toBuffer("image/png");
-  const widthPt = textWidthPx / scale;
+  const widthPt = totalWidthPx / scale;
   const heightPt = textHeightPx / scale;
   return { pngBuffer, widthPt, heightPt };
 }
 
-// Hebrew: try local TTF first, then CDN TTF, then WOFF from node_modules (pdf-lib may show dots with WOFF).
 const HEBREW_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansHebrew-Regular.ttf");
+const SYMBOLS_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansSymbols2-Regular.ttf");
 try {
   registerFont(HEBREW_FONT_LOCAL, { family: "Noto Sans Hebrew" });
 } catch (_) {}
+try {
+  registerFont(SYMBOLS_FONT_LOCAL, { family: "Noto Sans Symbols 2" });
+} catch (_) {}
+
+const TEXT_FONT = '"Noto Sans Hebrew", sans-serif';
+const EMOJI_FONT = '"Noto Sans Symbols 2", sans-serif';
 
 function hasHebrew(str) {
   return /[\u0590-\u05FF\uFB1D-\uFB4F\u0600-\u06FF]/.test(str);
+}
+
+function isEmojiOrSymbol(ch) {
+  if (!ch || ch.length === 0) return false;
+  const code = (typeof ch === "string" ? ch : ch[0]).codePointAt(0);
+  if (code == null) return false;
+  return (code >= 0x2600 && code <= 0x26ff) || (code >= 0x2700 && code <= 0x27bf) ||
+    (code >= 0x1f300 && code <= 0x1f9ff) || (code >= 0x1f600 && code <= 0x1f64f) ||
+    (code >= 0x1f1e0 && code <= 0x1f1ff) || (code >= 0xfe00 && code <= 0xfe0f);
+}
+
+function segmentText(text) {
+  const runs = [];
+  const chars = Array.from(String(text));
+  let i = 0;
+  while (i < chars.length) {
+    const emoji = isEmojiOrSymbol(chars[i]);
+    const runChars = [chars[i]];
+    i++;
+    while (i < chars.length && isEmojiOrSymbol(chars[i]) === emoji) {
+      runChars.push(chars[i]);
+      i++;
+    }
+    runs.push({ text: runChars.join(""), emoji });
+  }
+  return runs;
 }
 
 async function getImageBytes(url) {
