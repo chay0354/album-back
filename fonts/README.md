@@ -1,13 +1,7 @@
 # PDF fonts
 
-For Hebrew and emoji to appear correctly in generated PDFs, the server tries to load fonts in this order:
+- **NotoSansHebrew-Regular.ttf** – Hebrew text (RTL). Loaded from this folder first, then CDN.
+- **NotoSansSymbols2-Regular.ttf** – Emoji and symbols. Loaded from this folder or CDN so many Unicode symbols/emoji can render in the PDF.
+- **NotoEmoji-Regular.ttf** – Optional; improves emoji coverage if present.
 
-1. **Local TTF (recommended if CDN fails)**  
-   Place `NotoSansHebrew-Regular.ttf` in this folder.  
-   Download from: [Google Fonts – Noto Sans Hebrew](https://fonts.google.com/noto/specimen/Noto+Sans+Hebrew) (use “Download family”, then take the TTF from the zip), or from [notofonts/noto-sans-hebrew](https://github.com/notofonts/noto-sans-hebrew) (`instance_ttf/NotoSansHebrew-Regular.ttf`).
-
-2. **CDN** – The server then tries several public URLs for the same font.
-
-3. **node_modules** – It falls back to the WOFF from `@fontsource/noto-sans-hebrew` (Hebrew may render with dots in some viewers).
-
-If Hebrew still doesn’t show in the PDF, add the TTF file here and restart the server.
+Hebrew is drawn right-to-left by reversing the text when the run is purely Hebrew. Emoji/symbol runs use the symbols (or emoji) font when available.

@@ -23,11 +23,13 @@ const LATIN_FONT_PATH = path.join(FONTS_DIR, "noto-sans-hebrew-latin-400-normal.
 let hebrewFontBytes = null;
 let latinFontBytes = null;
 
-// Emoji/symbols: try Noto Emoji then Symbola-style fallback (symbols font for common emoji)
+// Emoji/symbols: try local first, then CDN (Noto Emoji is large; NotoSansSymbols2 has many symbols)
+const EMOJI_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoEmoji-Regular.ttf");
+const EMOJI_FONT_LOCAL_ALT = path.join(__dirname, "../../fonts/NotoSansSymbols2-Regular.ttf");
 const EMOJI_FONT_URLS = [
-  "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts/NotoEmoji-Regular.ttf",
-  "https://raw.githubusercontent.com/google/fonts/main/ofl/notoemoji/NotoEmoji-Regular.ttf",
   "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
+  "https://raw.githubusercontent.com/googlefonts/noto-emoji/main/fonts/NotoEmoji-Regular.ttf",
+  "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
 ];
 let emojiFontBytes = null;
 
@@ -83,12 +85,22 @@ async function getLatinFontBytes() {
 
 async function getEmojiFontBytes() {
   if (emojiFontBytes) return emojiFontBytes;
+  for (const fontPath of [EMOJI_FONT_LOCAL, EMOJI_FONT_LOCAL_ALT]) {
+    try {
+      const buf = await readFile(fontPath);
+      if (buf && buf.length > 0) {
+        emojiFontBytes = toUint8Array(buf);
+        console.log("[PDF] Emoji/symbols font loaded from local:", fontPath);
+        return emojiFontBytes;
+      }
+    } catch (_) {}
+  }
   for (const url of EMOJI_FONT_URLS) {
     try {
       const res = await fetch(url);
       if (res.ok) {
         emojiFontBytes = new Uint8Array(await res.arrayBuffer());
-        console.log("[PDF] Emoji/symbols font loaded:", url.slice(0, 50) + "...");
+        console.log("[PDF] Emoji/symbols font loaded from CDN");
         return emojiFontBytes;
       }
     } catch (e) {
@@ -98,8 +110,14 @@ async function getEmojiFontBytes() {
   return null;
 }
 
+/** True if string contains Hebrew or other RTL letters. */
 function hasHebrew(str) {
-  return /[\u0590-\u05FF]/.test(str);
+  return /[\u0590-\u05FF\uFB1D-\uFB4F\u0600-\u06FF]/.test(str);
+}
+
+/** Reverse run so RTL Hebrew displays correctly when PDF draws LTR. Reverse if run has Hebrew and no Latin letters. */
+function shouldReverseForRtl(str) {
+  return hasHebrew(str) && !/[a-zA-Z]/.test(String(str));
 }
 
 /** True if the character (single code point) is emoji/symbol we want to draw with emoji font. */
@@ -130,9 +148,9 @@ function segmentText(text) {
   return runs;
 }
 
-/** Reverse string for RTL Hebrew so it displays correctly when drawn LTR in PDF. */
+/** Reverse string for RTL so it displays correctly when drawn LTR in PDF. */
 function reverseForRtl(str) {
-  return Array.from(str).reverse().join("");
+  return Array.from(String(str)).reverse().join("");
 }
 
 /**
@@ -151,7 +169,7 @@ function drawSegmentedText(page, content, opts) {
     let text = run.text;
     let font = run.emoji ? (emojiFont || mainFont) : (hasHebrew(text) ? (hebrewFont || mainFont) : (latinFont || mainFont));
     if (!font) continue;
-    if (!run.emoji && hasHebrew(text)) text = reverseForRtl(text);
+    if (!run.emoji && shouldReverseForRtl(text)) text = reverseForRtl(text);
     let w = 0;
     try {
       w = font.widthOfTextAtSize(text, size);
