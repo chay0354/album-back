@@ -1,36 +1,114 @@
 import { Router } from "express";
-import { readFile } from "fs/promises";
 import path from "path";
+import { existsSync } from "fs";
 import { fileURLToPath } from "url";
+import { createCanvas, registerFont } from "canvas";
 import { PDFDocument, rgb } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
 import { supabase } from "../supabase.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const pdfRoutes = Router();
 
-// Fonts from @fontsource/noto-sans-hebrew: Hebrew subset + Latin so English (e.g. "MY GLOBY") renders
-const FONTS_DIR = path.join(__dirname, "../../node_modules/@fontsource/noto-sans-hebrew/files");
-const HEBREW_FONT_PATH = path.join(FONTS_DIR, "noto-sans-hebrew-hebrew-400-normal.woff");
-const LATIN_FONT_PATH = path.join(FONTS_DIR, "noto-sans-hebrew-latin-400-normal.woff");
-let hebrewFontBytes = null;
-let latinFontBytes = null;
+/**
+ * Render text as PNG (Hebrew + emoji supported). Segments into text vs emoji runs;
+ * draws each run with the right font. Returns { pngBuffer, widthPt, heightPt }.
+ */
+async function renderTextToPng(content, opts = {}) {
+  const fontSizePt = typeof opts.fontSize === "number" ? opts.fontSize : 28;
+  const color = opts.color || "#000000";
+  const scale = 2;
+  const fontSizePx = fontSizePt * scale;
+  const padding = fontSizePx * 0.5;
+  const textHeightPx = fontSizePx * 1.3;
 
-async function getHebrewFontBytes() {
-  if (hebrewFontBytes) return hebrewFontBytes;
-  hebrewFontBytes = await readFile(HEBREW_FONT_PATH);
-  return hebrewFontBytes;
+  const runs = segmentText(content);
+  const measureCtx = createCanvas(1, 1).getContext("2d");
+  let totalWidthPx = 0;
+  const runInfos = [];
+
+  for (const run of runs) {
+    const font = run.emoji ? EMOJI_FONT : TEXT_FONT;
+    measureCtx.font = `${fontSizePx}px ${font}`;
+    measureCtx.direction = !run.emoji && hasHebrew(run.text) ? "rtl" : "ltr";
+    const w = measureCtx.measureText(run.text).width;
+    totalWidthPx += w;
+    runInfos.push({ text: run.text, emoji: run.emoji, widthPx: w });
+  }
+
+  const w = Math.ceil(totalWidthPx + padding * 2);
+  const h = Math.ceil(textHeightPx + padding * 2);
+  const c = createCanvas(w, h);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.font = `${fontSizePx}px ${TEXT_FONT}`;
+
+  let x = padding;
+  const y = h / 2;
+  for (const run of runInfos) {
+    const font = run.emoji ? EMOJI_FONT : TEXT_FONT;
+    ctx.font = `${fontSizePx}px ${font}`;
+    ctx.direction = !run.emoji && hasHebrew(run.text) ? "rtl" : "ltr";
+    ctx.textAlign = "left";
+    ctx.fillText(run.text, x, y);
+    x += run.widthPx;
+  }
+
+  const pngBuffer = c.toBuffer("image/png");
+  const widthPt = totalWidthPx / scale;
+  const heightPt = textHeightPx / scale;
+  return { pngBuffer, widthPt, heightPt };
 }
 
-async function getLatinFontBytes() {
-  if (latinFontBytes) return latinFontBytes;
-  latinFontBytes = await readFile(LATIN_FONT_PATH);
-  return latinFontBytes;
-}
+const HEBREW_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansHebrew-Regular.ttf");
+const SYMBOLS_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansSymbols2-Regular.ttf");
+const EMOJI_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoEmoji-Regular.ttf");
+try {
+  registerFont(HEBREW_FONT_LOCAL, { family: "Noto Sans Hebrew" });
+} catch (_) {}
+try {
+  registerFont(SYMBOLS_FONT_LOCAL, { family: "Noto Sans Symbols 2" });
+} catch (_) {}
+let emojiFontFamily = "Noto Sans Symbols 2";
+try {
+  if (existsSync(EMOJI_FONT_LOCAL)) {
+    registerFont(EMOJI_FONT_LOCAL, { family: "Noto Emoji" });
+    emojiFontFamily = "Noto Emoji";
+  }
+} catch (_) {}
+
+const TEXT_FONT = '"Noto Sans Hebrew", sans-serif';
+const EMOJI_FONT = `"${emojiFontFamily}", "Noto Sans Symbols 2", sans-serif`;
 
 function hasHebrew(str) {
-  return /[\u0590-\u05FF]/.test(str);
+  return /[\u0590-\u05FF\uFB1D-\uFB4F\u0600-\u06FF]/.test(str);
+}
+
+function isEmojiOrSymbol(ch) {
+  if (!ch || ch.length === 0) return false;
+  const code = (typeof ch === "string" ? ch : ch[0]).codePointAt(0);
+  if (code == null) return false;
+  return (code >= 0x2600 && code <= 0x26ff) || (code >= 0x2700 && code <= 0x27bf) ||
+    (code >= 0x1f300 && code <= 0x1f9ff) || (code >= 0x1f600 && code <= 0x1f64f) ||
+    (code >= 0x1f1e0 && code <= 0x1f1ff) || (code >= 0xfe00 && code <= 0xfe0f);
+}
+
+function segmentText(text) {
+  const runs = [];
+  const chars = Array.from(String(text));
+  let i = 0;
+  while (i < chars.length) {
+    const emoji = isEmojiOrSymbol(chars[i]);
+    const runChars = [chars[i]];
+    i++;
+    while (i < chars.length && isEmojiOrSymbol(chars[i]) === emoji) {
+      runChars.push(chars[i]);
+      i++;
+    }
+    runs.push({ text: runChars.join(""), emoji });
+  }
+  return runs;
 }
 
 async function getImageBytes(url) {
@@ -58,7 +136,6 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
       .order("page_order");
 
     const doc = await PDFDocument.create();
-    doc.registerFontkit(fontkit);
     const pdfW = 595;
     const pdfH = 842;
     const EDITOR_PAGE_WIDTH = 420;
@@ -112,54 +189,35 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
           }]
         : [];
     if (textsToDraw.length > 0) {
-      let hebrewFontEmbed = null;
-      let latinFontEmbed = null;
-      try {
-        hebrewFontEmbed = await doc.embedFont(await getHebrewFontBytes());
-      } catch (e) {
-        console.warn("[PDF] Hebrew font load failed:", e.message);
-      }
-      try {
-        latinFontEmbed = await doc.embedFont(await getLatinFontBytes());
-      } catch (e) {
-        console.warn("[PDF] Latin font load failed:", e.message);
-      }
-      const font = hebrewFontEmbed || latinFontEmbed;
-      if (font) {
-        const { x: cx, y: cy, w: cw, h: ch } = coverImgBounds;
-        for (const t of textsToDraw) {
-          const content = (t.content || "").trim();
-          if (!content) continue;
+      const { x: cx, y: cy, w: cw, h: ch } = coverImgBounds;
+      for (const t of textsToDraw) {
+        const content = (t.content || "").trim();
+        if (!content) continue;
+        try {
+          const { pngBuffer, widthPt, heightPt } = await renderTextToPng(content, {
+            fontSize: typeof t.fontSize === "number" ? t.fontSize : 28,
+            color: t.color || "#ffffff",
+          });
           const xPct = typeof t.x === "number" ? t.x : 50;
           const yPct = typeof t.y === "number" ? t.y : 18;
           const fontSize = typeof t.fontSize === "number" ? t.fontSize : 28;
-          const useFont = hasHebrew(content) ? (hebrewFontEmbed || font) : (latinFontEmbed || font);
           const halfImgW = cw / 2;
           const xCenter = cx + (xPct / 100) * halfImgW;
           const centerY = cy + ch - (yPct / 100) * ch;
-          const baselineY = centerY - fontSize * 0.35;
-          const textWidth = useFont.widthOfTextAtSize(content, fontSize);
-          coverPdfPage.drawText(content, {
-            x: xCenter - textWidth / 2,
-            y: baselineY,
-            size: fontSize,
-            font: useFont,
-            color: hexToRgb(t.color || "#ffffff"),
+          const img = await doc.embedPng(pngBuffer);
+          coverPdfPage.drawImage(img, {
+            x: xCenter - widthPt / 2,
+            y: centerY - heightPt / 2,
+            width: widthPt,
+            height: heightPt,
           });
+        } catch (e) {
+          console.warn("[PDF] Cover text PNG failed:", e.message);
         }
       }
     }
 
     const baseUrl = supabase.storage.from("album-photos").getPublicUrl("").data.publicUrl.replace(/\/$/, "");
-    let hebrewFontEmbed = null;
-    let latinFontEmbed = null;
-    try {
-      hebrewFontEmbed = await doc.embedFont(await getHebrewFontBytes());
-    } catch (_) {}
-    try {
-      latinFontEmbed = await doc.embedFont(await getLatinFontBytes());
-    } catch (_) {}
-    const textFont = hebrewFontEmbed || latinFontEmbed;
 
     for (const p of pages || []) {
       const photos = (p.album_photos || []).sort((a, b) => a.photo_order - b.photo_order);
@@ -201,26 +259,31 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
           pdfPage.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
         } catch (_) {}
       }
-      if (textFont && pageTexts.length > 0) {
+      if (pageTexts.length > 0) {
         for (const t of pageTexts) {
           const content = (t.content || "").trim();
           if (!content) continue;
-          const xPct = typeof t.x === "number" ? t.x : 50;
-          const yPct = typeof t.y === "number" ? t.y : 25;
-          const designFontSize = typeof t.fontSize === "number" ? t.fontSize : 28;
-          const fontSize = Math.round(designFontSize * PDF_TEXT_SCALE);
-          const useFont = hasHebrew(content) ? (hebrewFontEmbed || textFont) : (latinFontEmbed || textFont);
-          const x = (xPct / 100) * pdfW;
-          const centerY = pdfH - (yPct / 100) * pdfH;
-          const baselineY = centerY - fontSize * 0.35;
-          const textWidth = useFont.widthOfTextAtSize(content, fontSize);
-          pdfPage.drawText(content, {
-            x: x - textWidth / 2,
-            y: baselineY,
-            size: fontSize,
-            font: useFont,
-            color: hexToRgb(t.color || "#000000"),
-          });
+          try {
+            const designFontSize = typeof t.fontSize === "number" ? t.fontSize : 28;
+            const fontSize = Math.round(designFontSize * PDF_TEXT_SCALE);
+            const { pngBuffer, widthPt, heightPt } = await renderTextToPng(content, {
+              fontSize,
+              color: t.color || "#000000",
+            });
+            const xPct = typeof t.x === "number" ? t.x : 50;
+            const yPct = typeof t.y === "number" ? t.y : 25;
+            const centerX = (xPct / 100) * pdfW;
+            const centerY = pdfH - (yPct / 100) * pdfH;
+            const img = await doc.embedPng(pngBuffer);
+            pdfPage.drawImage(img, {
+              x: centerX - widthPt / 2,
+              y: centerY - heightPt / 2,
+              width: widthPt,
+              height: heightPt,
+            });
+          } catch (e) {
+            console.warn("[PDF] Page text PNG failed:", e.message);
+          }
         }
       }
     }

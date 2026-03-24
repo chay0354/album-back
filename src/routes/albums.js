@@ -187,7 +187,70 @@ albumRoutes.delete("/:id", async (req, res) => {
   }
 });
 
-// Pages
+// Pages — bulk set count (one round-trip; avoids N sequential addPage calls from the client)
+albumRoutes.post("/:albumId/pages/sync", async (req, res) => {
+  try {
+    const { albumId } = req.params;
+    const raw = req.body?.target_count ?? req.body?.targetCount;
+    const targetCount = Number(raw);
+    const maxPages = 200;
+    if (!Number.isFinite(targetCount) || targetCount < 1 || targetCount > maxPages) {
+      return res.status(400).json({ error: `target_count must be between 1 and ${maxPages}` });
+    }
+
+    const { data: album, error: albumError } = await supabase
+      .from("albums")
+      .select("id")
+      .eq("id", albumId)
+      .single();
+    if (albumError || !album) {
+      return res.status(404).json({ error: "Album not found" });
+    }
+
+    const { data: pages, error: pagesError } = await supabase
+      .from("album_pages")
+      .select("id, page_order")
+      .eq("album_id", albumId)
+      .order("page_order", { ascending: true });
+    if (pagesError) throw pagesError;
+
+    const list = pages || [];
+    const current = list.length;
+
+    if (current < targetCount) {
+      const toAdd = targetCount - current;
+      const maxOrder = list.length ? Math.max(...list.map((p) => p.page_order ?? 0)) : -1;
+      const rows = Array.from({ length: toAdd }, (_, i) => ({
+        album_id: albumId,
+        page_order: maxOrder + 1 + i,
+      }));
+      const { error: insertError } = await supabase.from("album_pages").insert(rows);
+      if (insertError) throw insertError;
+    } else if (current > targetCount) {
+      const toRemove = current - targetCount;
+      const sorted = [...list].sort((a, b) => (a.page_order ?? 0) - (b.page_order ?? 0));
+      const idsToDelete = sorted.slice(-toRemove).map((p) => p.id);
+      const { error: deleteError } = await supabase.from("album_pages").delete().in("id", idsToDelete);
+      if (deleteError) throw deleteError;
+    }
+
+    const { data: albumRow, error: albumErr2 } = await supabase
+      .from("albums")
+      .select("*")
+      .eq("id", albumId)
+      .single();
+    if (albumErr2 || !albumRow) throw albumErr2 || new Error("Album not found");
+    const { data: pagesOut } = await supabase
+      .from("album_pages")
+      .select("*, album_photos(*)")
+      .eq("album_id", albumId)
+      .order("page_order");
+    res.json({ ...albumRow, pages: pagesOut || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 albumRoutes.post("/:albumId/pages", async (req, res) => {
   try {
     const { albumId } = req.params;
