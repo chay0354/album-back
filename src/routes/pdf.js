@@ -146,6 +146,72 @@ async function getImageBytes(url) {
   return new Uint8Array(buf);
 }
 
+/** Generate PDF from client-rendered page images (fixes Hebrew on iPhone - browser fonts used). */
+pdfRoutes.post("/generate-from-images", async (req, res) => {
+    const { albumId, images } = req.body || {};
+    if (!albumId || !Array.isArray(images) || images.length === 0) {
+      return res.status(400).json({ error: "albumId and images array required" });
+    }
+    try {
+      const { data: album, error: albumError } = await supabase
+        .from("albums")
+        .select("id, cover_config")
+        .eq("id", albumId)
+        .single();
+      if (albumError || !album) return res.status(404).json({ error: "Album not found" });
+
+      const doc = await PDFDocument.create();
+      const pdfW = 595;
+      const pdfH = 842;
+
+      for (let i = 0; i < images.length; i++) {
+        const dataUrl = String(images[i] || "");
+        const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+        if (!match) continue;
+        const [, format, base64] = match;
+        const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
+        const pdfPage = doc.addPage([pdfW, pdfH]);
+        try {
+          const img = format.toLowerCase() === "png"
+            ? await doc.embedPng(bytes)
+            : await doc.embedJpg(bytes);
+          pdfPage.drawImage(img, { x: 0, y: 0, width: pdfW, height: pdfH });
+        } catch (e) {
+          console.warn("[PDF] Image embed failed for page", i + 1, e.message);
+        }
+      }
+
+      const pdfBytes = await doc.save();
+      const pdfBuffer = Buffer.from(pdfBytes);
+      const coverConfig = album.cover_config || {};
+      const mail = coverConfig.userEmail || "";
+      const storagePath = `${albumId}/latest.pdf`;
+
+      let pdfUrl = null;
+      try {
+        const { error: uploadErr } = await supabase.storage
+          .from("pdfs")
+          .upload(storagePath, pdfBuffer, { contentType: "application/pdf", upsert: true });
+        if (!uploadErr) {
+          const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
+          pdfUrl = urlData?.publicUrl || null;
+          const { error: insertErr } = await supabase.from("pdf_deliveries").insert({ pdf: pdfUrl, mail });
+          if (insertErr) console.warn("[PDF] pdf_deliveries insert:", insertErr.message);
+        }
+      } catch (err) {
+        console.warn("[PDF] storage save:", err?.message);
+      }
+
+      if (pdfUrl) res.setHeader("X-Pdf-Url", pdfUrl);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", 'attachment; filename="album.pdf"');
+      res.send(pdfBuffer);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: e.message });
+    }
+});
+
 pdfRoutes.get("/generate/:albumId", async (req, res) => {
   const { albumId } = req.params;
   console.log("[PDF] generate requested, albumId:", albumId);
