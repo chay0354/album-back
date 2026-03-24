@@ -3,6 +3,7 @@ import path from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { createCanvas, registerFont } from "canvas";
+
 import { PDFDocument, rgb } from "pdf-lib";
 import { supabase } from "../supabase.js";
 
@@ -22,7 +23,8 @@ async function renderTextToPng(content, opts = {}) {
   const padding = fontSizePx * 0.5;
   const textHeightPx = fontSizePx * 1.3;
 
-  const runs = segmentText(content);
+  const cleanContent = String(content || "").replace(/^\uFEFF/, "").replace(/\0/g, "").trim();
+  const runs = segmentText(cleanContent);
   const measureCtx = createCanvas(1, 1).getContext("2d");
   let totalWidthPx = 0;
   const runInfos = [];
@@ -61,15 +63,41 @@ async function renderTextToPng(content, opts = {}) {
   return { pngBuffer, widthPt, heightPt };
 }
 
-const HEBREW_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansHebrew-Regular.ttf");
-const SYMBOLS_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoSansSymbols2-Regular.ttf");
-const EMOJI_FONT_LOCAL = path.join(__dirname, "../../fonts/NotoEmoji-Regular.ttf");
+const FONT_DIRS = [
+  path.resolve(__dirname, "../../fonts"),
+  path.resolve(process.cwd(), "fonts"),
+  path.resolve(process.cwd(), "back/fonts"),
+];
+function resolveFont(name) {
+  for (const dir of FONT_DIRS) {
+    const p = path.join(dir, name);
+    if (existsSync(p)) return p;
+  }
+  return path.join(FONT_DIRS[0], name);
+}
+
+const HEBREW_FONT_LOCAL = resolveFont("NotoSansHebrew-Regular.ttf");
+const SYMBOLS_FONT_LOCAL = resolveFont("NotoSansSymbols2-Regular.ttf");
+const EMOJI_FONT_LOCAL = resolveFont("NotoEmoji-Regular.ttf");
+
+let hebrewFontOk = false;
 try {
-  registerFont(HEBREW_FONT_LOCAL, { family: "Noto Sans Hebrew" });
-} catch (_) {}
+  if (existsSync(HEBREW_FONT_LOCAL)) {
+    registerFont(HEBREW_FONT_LOCAL, { family: "Noto Sans Hebrew", weight: "normal", style: "normal" });
+    hebrewFontOk = true;
+  } else {
+    console.warn("[PDF] Hebrew font not found at", HEBREW_FONT_LOCAL, "- text may render as boxes");
+  }
+} catch (e) {
+  console.warn("[PDF] registerFont Hebrew failed:", e.message);
+}
 try {
-  registerFont(SYMBOLS_FONT_LOCAL, { family: "Noto Sans Symbols 2" });
-} catch (_) {}
+  if (existsSync(SYMBOLS_FONT_LOCAL)) {
+    registerFont(SYMBOLS_FONT_LOCAL, { family: "Noto Sans Symbols 2" });
+  }
+} catch (e) {
+  console.warn("[PDF] registerFont Symbols failed:", e.message);
+}
 let emojiFontFamily = "Noto Sans Symbols 2";
 try {
   if (existsSync(EMOJI_FONT_LOCAL)) {
