@@ -165,7 +165,14 @@ albumRoutes.patch("/:id", async (req, res) => {
     const updates = {};
     if (title !== undefined) updates.title = title;
     if (cover_id !== undefined) updates.cover_id = cover_id;
-    if (cover_config !== undefined) updates.cover_config = cover_config;
+    if (cover_config !== undefined) {
+      const { data: existing } = await supabase.from("albums").select("cover_config").eq("id", id).single();
+      const prev =
+        existing?.cover_config && typeof existing.cover_config === "object" && !Array.isArray(existing.cover_config)
+          ? existing.cover_config
+          : {};
+      updates.cover_config = { ...prev, ...cover_config };
+    }
     if (share_token !== undefined) updates.share_token = share_token;
     updates.updated_at = new Date().toISOString();
     const { data, error } = await supabase.from("albums").update(updates).eq("id", id).select().single();

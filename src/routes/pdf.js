@@ -317,7 +317,6 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
       const photos = (p.album_photos || []).sort((a, b) => a.photo_order - b.photo_order);
       const pageConfig = p.page_config || {};
       const pageTexts = Array.isArray(pageConfig.texts) ? pageConfig.texts : [];
-      if (photos.length === 0 && pageTexts.length === 0) continue;
       const pdfPage = doc.addPage([pdfW, pdfH]);
       const bgHex = pageConfig.backgroundColor;
       if (bgHex && /^#[0-9A-Fa-f]{6}$/.test(bgHex)) {
