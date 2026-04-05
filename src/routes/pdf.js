@@ -165,12 +165,12 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
       const pdfH = 842;
 
       for (let i = 0; i < images.length; i++) {
+        const pdfPage = doc.addPage([pdfW, pdfH]);
         const dataUrl = String(images[i] || "");
         const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
         if (!match) continue;
         const [, format, base64] = match;
         const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
-        const pdfPage = doc.addPage([pdfW, pdfH]);
         try {
           const img = format.toLowerCase() === "png"
             ? await doc.embedPng(bytes)
