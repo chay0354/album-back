@@ -175,7 +175,12 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
           const img = format.toLowerCase() === "png"
             ? await doc.embedPng(bytes)
             : await doc.embedJpg(bytes);
-          pdfPage.drawImage(img, { x: 0, y: 0, width: pdfW, height: pdfH });
+          const scale = Math.min(pdfW / img.width, pdfH / img.height);
+          const drawW = img.width * scale;
+          const drawH = img.height * scale;
+          const drawX = (pdfW - drawW) / 2;
+          const drawY = (pdfH - drawH) / 2;
+          pdfPage.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
         } catch (e) {
           console.warn("[PDF] Image embed failed for page", i + 1, e.message);
         }
@@ -185,7 +190,8 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
       const pdfBuffer = Buffer.from(pdfBytes);
       const coverConfig = album.cover_config || {};
       const mail = coverConfig.userEmail || "";
-      const storagePath = `${albumId}/latest.pdf`;
+      const version = Date.now();
+      const storagePath = `${albumId}/latest-${version}.pdf`;
 
       let pdfUrl = null;
       try {
@@ -194,7 +200,7 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
           .upload(storagePath, pdfBuffer, { contentType: "application/pdf", upsert: true });
         if (!uploadErr) {
           const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
-          pdfUrl = urlData?.publicUrl || null;
+          pdfUrl = urlData?.publicUrl ? `${urlData.publicUrl}?v=${version}` : null;
           const { error: insertErr } = await supabase.from("pdf_deliveries").insert({ pdf: pdfUrl, mail });
           if (insertErr) console.warn("[PDF] pdf_deliveries insert:", insertErr.message);
         }
@@ -284,6 +290,20 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
         : [];
     if (textsToDraw.length > 0) {
       const { x: cx, y: cy, w: cw, h: ch } = coverImgBounds;
+      const FRONT_START = 0;
+      const FRONT_END = 48;
+      const BACK_START = 52;
+      const BACK_END = 100;
+      const toGlobalCoverXPct = (text) => {
+        const raw = typeof text?.x === "number" ? text.x : 50;
+        const side = text?.side === "back" ? "back" : text?.side === "front" ? "front" : null;
+        const inFrontRange = raw >= FRONT_START && raw <= FRONT_END;
+        const inBackRange = raw >= BACK_START && raw <= BACK_END;
+        if (inFrontRange || inBackRange) return raw;
+        if (side === "front") return FRONT_START + (Math.max(0, Math.min(100, raw)) / 100) * (FRONT_END - FRONT_START);
+        if (side === "back") return BACK_START + (Math.max(0, Math.min(100, raw)) / 100) * (BACK_END - BACK_START);
+        return Math.max(0, Math.min(100, raw));
+      };
       for (const t of textsToDraw) {
         const content = (t.content || "").trim();
         if (!content) continue;
@@ -292,11 +312,9 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
             fontSize: typeof t.fontSize === "number" ? t.fontSize : 28,
             color: t.color || "#ffffff",
           });
-          const xPct = typeof t.x === "number" ? t.x : 50;
+          const xPct = toGlobalCoverXPct(t);
           const yPct = typeof t.y === "number" ? t.y : 18;
-          const fontSize = typeof t.fontSize === "number" ? t.fontSize : 28;
-          const halfImgW = cw / 2;
-          const xCenter = cx + (xPct / 100) * halfImgW;
+          const xCenter = cx + (xPct / 100) * cw;
           const centerY = cy + ch - (yPct / 100) * ch;
           const img = await doc.embedPng(pngBuffer);
           coverPdfPage.drawImage(img, {
