@@ -2,6 +2,8 @@ import { Router } from "express";
 import path from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
+import { randomUUID } from "node:crypto";
+import multer from "multer";
 import { createCanvas, registerFont } from "canvas";
 
 import { PDFDocument, rgb } from "pdf-lib";
@@ -11,6 +13,32 @@ import { albumPageWidthPt, albumPageHeightPt } from "../albumPageSize.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const pdfRoutes = Router();
+
+/** Vercel serverless request body max ~4.5MB; keep under for multipart PDF upload. */
+const uploadClientPdf = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4_200_000 },
+});
+
+async function persistDeliveredPdf(album, pdfBuffer, storagePath) {
+  const mail = (album.cover_config || {}).userEmail || "";
+  const version = Date.now();
+  let pdfUrl = null;
+  try {
+    const { error: uploadErr } = await supabase.storage
+      .from("pdfs")
+      .upload(storagePath, pdfBuffer, { contentType: "application/pdf", upsert: true });
+    if (!uploadErr) {
+      const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
+      pdfUrl = urlData?.publicUrl ? `${urlData.publicUrl}?v=${version}` : null;
+      const { error: insertErr } = await supabase.from("pdf_deliveries").insert({ pdf: pdfUrl, mail });
+      if (insertErr) console.warn("[PDF] pdf_deliveries insert:", insertErr.message);
+    }
+  } catch (err) {
+    console.warn("[PDF] storage save:", err?.message);
+  }
+  return pdfUrl;
+}
 
 /**
  * Render text as PNG (Hebrew + emoji supported). Segments into text vs emoji runs;
@@ -189,25 +217,9 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
 
       const pdfBytes = await doc.save();
       const pdfBuffer = Buffer.from(pdfBytes);
-      const coverConfig = album.cover_config || {};
-      const mail = coverConfig.userEmail || "";
       const version = Date.now();
       const storagePath = `${albumId}/latest-${version}.pdf`;
-
-      let pdfUrl = null;
-      try {
-        const { error: uploadErr } = await supabase.storage
-          .from("pdfs")
-          .upload(storagePath, pdfBuffer, { contentType: "application/pdf", upsert: true });
-        if (!uploadErr) {
-          const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
-          pdfUrl = urlData?.publicUrl ? `${urlData.publicUrl}?v=${version}` : null;
-          const { error: insertErr } = await supabase.from("pdf_deliveries").insert({ pdf: pdfUrl, mail });
-          if (insertErr) console.warn("[PDF] pdf_deliveries insert:", insertErr.message);
-        }
-      } catch (err) {
-        console.warn("[PDF] storage save:", err?.message);
-      }
+      const pdfUrl = await persistDeliveredPdf(album, pdfBuffer, storagePath);
 
       if (pdfUrl) res.setHeader("X-Pdf-Url", pdfUrl);
       res.setHeader("Content-Type", "application/pdf");
@@ -217,6 +229,114 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
       console.error(e);
       res.status(500).json({ error: e.message });
     }
+});
+
+/** Client already built the PDF (same quality as local save). Multipart stays under Vercel ~4.5MB limit. */
+pdfRoutes.post("/upload-client-pdf", (req, res, next) => {
+  uploadClientPdf.single("pdf")(req, res, (err) => {
+    if (err?.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: "PDF exceeds single-request limit; client should use signed upload.",
+      });
+    }
+    next(err);
+  });
+}, async (req, res) => {
+  const albumId = req.body?.albumId;
+  if (!albumId || !req.file?.buffer) {
+    return res.status(400).json({ error: "albumId and pdf file required" });
+  }
+  try {
+    const { data: album, error: albumError } = await supabase
+      .from("albums")
+      .select("id, cover_config")
+      .eq("id", albumId)
+      .single();
+    if (albumError || !album) return res.status(404).json({ error: "Album not found" });
+
+    const pdfBuffer = req.file.buffer;
+    const version = Date.now();
+    const storagePath = `${albumId}/latest-${version}.pdf`;
+    const pdfUrl = await persistDeliveredPdf(album, pdfBuffer, storagePath);
+
+    if (pdfUrl) res.setHeader("X-Pdf-Url", pdfUrl);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", 'attachment; filename="album.pdf"');
+    res.send(pdfBuffer);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** For PDFs over ~4MB: browser uploads via Supabase signed URL (bypasses Vercel body limit). */
+pdfRoutes.post("/signed-upload-start", async (req, res) => {
+  const { albumId } = req.body || {};
+  if (!albumId) return res.status(400).json({ error: "albumId required" });
+  try {
+    const { data: album, error: albumError } = await supabase
+      .from("albums")
+      .select("id")
+      .eq("id", albumId)
+      .single();
+    if (albumError || !album) return res.status(404).json({ error: "Album not found" });
+
+    const fileName = `latest-${Date.now()}-${randomUUID()}.pdf`;
+    const storagePath = `${albumId}/${fileName}`;
+    const { data, error } = await supabase.storage
+      .from("pdfs")
+      .createSignedUploadUrl(storagePath, { upsert: true });
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data?.token || !data?.path) {
+      return res.status(500).json({ error: "Could not create signed upload" });
+    }
+    return res.json({ path: data.path, token: data.token });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+pdfRoutes.post("/signed-upload-finish", async (req, res) => {
+  const { albumId, path: storagePath } = req.body || {};
+  if (!albumId || !storagePath) return res.status(400).json({ error: "albumId and path required" });
+  if (!String(storagePath).startsWith(`${albumId}/`)) {
+    return res.status(400).json({ error: "Invalid path" });
+  }
+  try {
+    const { data: album, error: albumError } = await supabase
+      .from("albums")
+      .select("id, cover_config")
+      .eq("id", albumId)
+      .single();
+    if (albumError || !album) return res.status(404).json({ error: "Album not found" });
+
+    const fileName = storagePath.slice(albumId.length + 1);
+    let found = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { data: rows, error: listErr } = await supabase.storage.from("pdfs").list(albumId);
+      if (listErr) return res.status(500).json({ error: listErr.message });
+      if ((rows || []).some((r) => r.name === fileName)) {
+        found = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!found) return res.status(400).json({ error: "Upload not found" });
+
+    const version = Date.now();
+    const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
+    const mail = (album.cover_config || {}).userEmail || "";
+    const pdfUrl = urlData?.publicUrl ? `${urlData.publicUrl}?v=${version}` : null;
+    if (pdfUrl) {
+      const { error: insertErr } = await supabase.from("pdf_deliveries").insert({ pdf: pdfUrl, mail });
+      if (insertErr) console.warn("[PDF] pdf_deliveries insert:", insertErr.message);
+    }
+    return res.json({ pdfUrl });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 pdfRoutes.get("/generate/:albumId", async (req, res) => {
