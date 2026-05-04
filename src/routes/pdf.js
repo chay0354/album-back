@@ -6,6 +6,7 @@ import { createCanvas, registerFont } from "canvas";
 
 import { PDFDocument, rgb } from "pdf-lib";
 import { supabase } from "../supabase.js";
+import { albumPageWidthPt, albumPageHeightPt } from "../../../shared/albumPageSize.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -161,8 +162,8 @@ pdfRoutes.post("/generate-from-images", async (req, res) => {
       if (albumError || !album) return res.status(404).json({ error: "Album not found" });
 
       const doc = await PDFDocument.create();
-      const pdfW = 595;
-      const pdfH = 842;
+      const pdfW = albumPageWidthPt();
+      const pdfH = albumPageHeightPt();
 
       for (let i = 0; i < images.length; i++) {
         const pdfPage = doc.addPage([pdfW, pdfH]);
@@ -236,8 +237,8 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
       .order("page_order");
 
     const doc = await PDFDocument.create();
-    const pdfW = 595;
-    const pdfH = 842;
+    const pdfW = albumPageWidthPt();
+    const pdfH = albumPageHeightPt();
     const EDITOR_PAGE_WIDTH = 420;
     const PDF_TEXT_SCALE = pdfW / EDITOR_PAGE_WIDTH;
     const coverConfig = album.cover_config || {};
@@ -250,15 +251,15 @@ pdfRoutes.get("/generate/:albumId", async (req, res) => {
     }
 
     // Cover page: center the cover image as-is (preserve aspect ratio, fit on page)
-    const coverPdfPage = doc.addPage([595, 842]);
+    const coverPdfPage = doc.addPage([pdfW, pdfH]);
     let coverImgBounds = { x: 0, y: 0, w: pdfW, h: pdfH };
     if (coverImageUrl) {
       try {
         const imgBytes = await getImageBytes(coverImageUrl);
         if (imgBytes) {
           const img = await doc.embedJpg(imgBytes).catch(() => doc.embedPng(imgBytes));
-          const pageW = 595;
-          const pageH = 842;
+          const pageW = pdfW;
+          const pageH = pdfH;
           const scale = Math.min(pageW / img.width, pageH / img.height);
           const drawW = img.width * scale;
           const drawH = img.height * scale;
