@@ -6,7 +6,7 @@ import { createCanvas, registerFont } from "canvas";
 
 import { PDFDocument, rgb } from "pdf-lib";
 import { supabase } from "../supabase.js";
-import { albumPageWidthPt, albumPageHeightPt } from "../../../shared/albumPageSize.js";
+import { albumPageWidthPt, albumPageHeightPt } from "../albumPageSize.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

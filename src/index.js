@@ -9,36 +9,10 @@ import { adminRoutes } from "./routes/admin.js";
 const app = express();
 const PORT = process.env.PORT || 3010;
 
-/** Strip trailing slashes so env matches browser Origin exactly (common Vercel misconfig). */
-function normalizeOrigin(url) {
-  if (!url || typeof url !== "string") return "";
-  return url.trim().replace(/\/+$/, "");
-}
-
-/**
- * CORS: ALLOWED_ORIGINS or FRONT_URL, comma-separated (e.g. prod + preview).
- * If unset, any origin is reflected (dev / single-deploy). With credentials: true, origin must be explicit or permissive.
- */
-function parseAllowedOrigins() {
-  const raw = process.env.ALLOWED_ORIGINS || process.env.FRONT_URL || "";
-  return raw
-    .split(",")
-    .map(normalizeOrigin)
-    .filter(Boolean);
-}
-
-function createCorsOrigin() {
-  const list = parseAllowedOrigins();
-  if (list.length === 0) return true;
-  return (origin, callback) => {
-    if (!origin) return callback(null, true);
-    callback(null, list.includes(normalizeOrigin(origin)));
-  };
-}
-
+// Reflect any browser Origin (production + previews). Server must not crash — missing CORS on 500 is often a symptom.
 app.use(
   cors({
-    origin: createCorsOrigin(),
+    origin: true,
     credentials: true,
     optionsSuccessStatus: 204,
   })
