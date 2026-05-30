@@ -287,10 +287,15 @@ pdfRoutes.post("/signed-upload-start", async (req, res) => {
       .from("pdfs")
       .createSignedUploadUrl(storagePath, { upsert: true });
     if (error) return res.status(500).json({ error: error.message });
-    if (!data?.token || !data?.path) {
+    if (!data?.token || !data?.path || !data?.signedUrl) {
       return res.status(500).json({ error: "Could not create signed upload" });
     }
-    return res.json({ path: data.path, token: data.token });
+    // signedUrl may be relative; resolve against the project storage origin so the browser can PUT directly.
+    const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").replace(/\/$/, "");
+    const signedUrl = data.signedUrl.startsWith("http")
+      ? data.signedUrl
+      : `${base}/storage/v1${data.signedUrl}`;
+    return res.json({ path: data.path, token: data.token, signedUrl });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
